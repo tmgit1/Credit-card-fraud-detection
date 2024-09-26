@@ -1,0 +1,466 @@
+---
+title: "Credit card fraud detection notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+```{r}
+# Chargement des bibliothèques nécessaires
+library(tidyverse)
+library(skimr)
+library(pROC)
+library(caret)
+library(xgboost)
+library(randomForest)
+library(smotefamily)
+library(dplyr)
+```
+
+```{r}
+# Vérifie le répertoire de travail actuel
+getwd()
+```
+
+```{r}
+# Etape 1 : Exploratory Analysis of Data
+# Chargement des données
+data <- read.csv("creditcard.csv")
+```
+
+```{r}
+# Affiche les 5 premières lignes du dataframe
+head(data, 5)
+```
+```{r}
+dim(data)
+```
+
+```{r}
+summary(data)
+```
+
+```{r}
+str(data)
+```
+
+```{r}
+# Analyse de la distribution des transactions légitimes et frauduleuses
+fraud_distribution <- table(data$Class)
+print("Distribution des transactions légitimes et frauduleuses:")
+print(fraud_distribution)
+```
+
+```{r}
+# Calcul du pourcentage de fraudes
+fraud_percentage <- (fraud_distribution[2] / sum(fraud_distribution)) * 100
+print(paste("Pourcentage de transactions frauduleuses :", round(fraud_percentage, 2), "%"))
+```
+
+```{r}
+# Data cleaning
+# Vérification des valeurs manquantes
+missing_values <- colSums(is.na(data))
+print("Valeurs manquantes par colonne :")
+print(missing_values)
+```
+
+```{r}
+# Résumé statistique des variables
+skim(data)
+```
+
+```{r}
+# Séparation des variables numériques et catégorielles
+numeric_cols <- sapply(data, is.numeric)
+numeric_data <- data[, numeric_cols]
+```
+
+```{r}
+# Etape 2 : modèles prédictifs (régression logistique)
+# Préparation des données
+# On suppose que toutes les colonnes sauf 'Class' sont des prédicteurs
+predictors <- setdiff(names(data), "Class")
+data$Class <- as.factor(data$Class) # transforme la colonne "Class" du dataframe "data" en type facteur utilisé par les algorithmes de machine learning
+```
+
+```{r}
+# Division des données en ensembles d'entraînement et de test
+set.seed(123)  # Pour la reproductibilité
+train_index <- createDataPartition(data$Class, p = 0.7, list = FALSE)
+train_data <- data[train_index, ]
+test_data <- data[-train_index, ]
+```
+
+```{r}
+levels(train_data$Class)
+```
+
+```{r}
+train_data$Class <- factor(train_data$Class, levels = c("0", "1"), labels = c("NonFraud", "Fraud"))
+```
+
+```{r}
+levels(train_data$Class)
+```
+
+```{r}
+logistic_model <- train(
+  x = train_data[, predictors],
+  y = train_data$Class,
+  method = "glm",
+  family = "binomial",
+  trControl = trainControl(method = "cv", number = 5, classProbs = TRUE, summaryFunction = twoClassSummary),
+  metric = "ROC"
+)
+```
+
+```{r}
+predictions <- predict(logistic_model, newdata = test_data)
+prob_predictions <- predict(logistic_model, newdata = test_data, type = "prob")
+```
+
+```{r}
+roc_obj <- roc(test_data$Class, prob_predictions[, "Fraud"])
+auc(roc_obj)  # Calcul de l'AUC
+plot(roc_obj)  # Courbe ROC
+```
+
+```{r}
+test_data$Class <- factor(test_data$Class, levels = c("0", "1"), labels = c("NonFraud", "Fraud"))
+```
+
+```{r}
+confusionMatrix(predictions, test_data$Class)
+```
+
+```{r}
+# Sensitivity (Recall for NonFraud) : 0.9998 : La sensibilité (ou rappel) pour la classe "NonFraud" est de 99.98%. Cela signifie que le modèle détecte presque tous les cas de "NonFraud" correctement.
+# Specificity (Recall for Fraud) : 0.6531 : La spécificité pour la classe "Fraud" est de 65.31%. Cela signifie que seulement 65% des fraudes sont correctement détectées. Il reste donc des erreurs dans la détection de la fraude (faux négatifs).
+# Le modèle de régression logistique présente donc de bonnes performances mais les classes étant déséquilibrées (la classe "NonFraud" est très largement majoritaire), on observe qu'il reste une marge de progression concernant la détection de fraude. 
+```
+
+```{r}
+# Régression ridge
+set.seed(123)
+ridge_model <- train(
+  x = train_data[, predictors],
+  y = train_data$Class,
+  method = "glmnet",
+  trControl = trainControl(method = "cv", number = 5, classProbs = TRUE, summaryFunction = twoClassSummary),
+  tuneGrid = expand.grid(alpha = 0, lambda = seq(0.001, 0.1, by = 0.001)),  # Pénalisation Ridge
+  metric = "ROC"
+)
+```
+
+```{r}
+# Prédiction des probabilités
+ridge_predictions_prob <- predict(ridge_model, newdata = test_data[, predictors], type = "prob")
+
+# Prédiction des classes
+ridge_predictions_class <- predict(ridge_model, newdata = test_data[, predictors])
+```
+
+```{r}
+# Calcul de l'AUC
+ridge_roc <- roc(test_data$Class, ridge_predictions_prob$Fraud)  # Assuming "Fraud" is the positive class
+ridge_auc <- auc(ridge_roc)
+print(ridge_auc)
+
+# Tracer la courbe ROC
+plot(ridge_roc, col = "blue", main = "ROC Curve for Ridge Model")
+```
+
+```{r}
+# Matrice de confusion
+confusionMatrix(ridge_predictions_class, test_data$Class)
+```
+
+```{r}
+set.seed(123)
+lasso_model <- train(
+  x = train_data[, predictors],
+  y = train_data$Class,
+  method = "glmnet",
+  trControl = trainControl(method = "cv", number = 5, classProbs = TRUE, summaryFunction = twoClassSummary),
+  tuneGrid = expand.grid(alpha = 1, lambda = seq(0.001, 0.1, by = 0.001)),  # Pénalisation Lasso
+  metric = "ROC"
+)
+```
+
+```{r}
+# Prédiction des probabilités
+lasso_predictions_prob <- predict(lasso_model, newdata = test_data[, predictors], type = "prob")
+# Prédiction des classes
+lasso_predictions_class <- predict(lasso_model, newdata = test_data[, predictors])
+```
+
+```{r}
+# Calcul de l'AUC
+lasso_roc <- roc(test_data$Class, lasso_predictions_prob$Fraud)  # Assuming "Fraud" is the positive class
+lasso_auc <- auc(lasso_roc)
+print(paste("AUC:", lasso_auc))
+
+# Tracer la courbe ROC
+plot(lasso_roc, col = "red", main = "ROC Curve for Lasso Model")
+```
+
+```{r}
+# Matrice de confusion
+# Le modèle Lasso ne parvient pas du tout à prédire les cas de fraudes
+lasso_conf_matrix <- confusionMatrix(lasso_predictions_class, test_data$Class)
+print(lasso_conf_matrix)
+```
+
+```{r}
+# Division des données en ensembles d'entraînement et de test
+set.seed(123)  # Pour la reproductibilité
+train_index <- createDataPartition(data$Class, p = 0.7, list = FALSE)
+train_data <- data[train_index, ]
+test_data <- data[-train_index, ]
+
+# Conversion des données en format DMatrix pour XGBoost
+dtrain <- xgb.DMatrix(data = as.matrix(train_data[, predictors]), label = as.numeric(train_data$Class) - 1)
+dtest <- xgb.DMatrix(data = as.matrix(test_data[, predictors]), label = as.numeric(test_data$Class) - 1)
+```
+
+```{r}
+# Définition des paramètres XGBoost
+xgb_params <- list(
+  objective = "binary:logistic",
+  eval_metric = "auc",
+  eta = 0.1,
+  max_depth = 6,
+  min_child_weight = 1,
+  subsample = 0.8,
+  colsample_bytree = 0.8
+)
+```
+
+
+```{r}
+# Entraînement du modèle XGBoost
+xgb_model <- xgb.train(
+  params = xgb_params,
+  data = dtrain,
+  nrounds = 100,
+  watchlist = list(train = dtrain, test = dtest),
+  early_stopping_rounds = 10,
+  verbose = 1
+)
+```
+
+```{r}
+# Prédictions sur l'ensemble de test
+predictions <- predict(xgb_model, dtest)
+```
+
+```{r}
+# Évaluation du modèle
+xgb_roc_curve <- roc(test_data$Class, predictions)
+xgb_auc_score <- auc(xgb_roc_curve)
+
+# Affichage des résultats
+print(paste("AUC Score:", xgb_auc_score))
+
+# Visualisation de la courbe ROC
+plot(xgb_roc_curve, main = "Courbe ROC - XGBoost")
+```
+
+```{r}
+# Matrice de confusion
+# Le modèle xgboost présente les meilleures performances par rapport aux autres modèles notamment concernant la prédiction de la classe "Fraude" qui est très minoritaire dans le jeu de données
+pred_class <- ifelse(predictions > 0.5, 1, 0)
+conf_matrix <- confusionMatrix(as.factor(pred_class), test_data$Class)
+print(conf_matrix)
+```
+
+```{r}
+# Entraînement du modèle de forêt aléatoire
+rf_model <- randomForest(Class ~ ., data = train_data, importance = TRUE, ntree = 100)
+```
+
+```{r}
+# Prédictions sur l'ensemble de test
+predictions <- predict(rf_model, test_data)
+```
+
+```{r}
+# Évaluation du modèle
+# Les performances sont légérement moins bonnes que pour le modèle xgboost mais reste dans le même ordre de grandeur 
+conf_matrix <- confusionMatrix(predictions, test_data$Class)
+print(conf_matrix)
+```
+
+```{r}
+# Etape 3 : entraînement de modèles (régression, xgboost, randomForest) sur des données équilibrées grâce à un oversampling (Synthetic Minority Oversampling Technique (SMOTE)
+
+data$Class <- factor(data$Class, levels = c(0, 1), labels = c("NonFraud", "Fraud"))
+
+# Division des données en ensembles d'entraînement et de test
+set.seed(123)  # Pour la reproductibilité
+train_index <- createDataPartition(data$Class, p = 0.7, list = FALSE)
+train_data <- data[train_index, ]
+test_data <- data[-train_index, ]
+
+# Appliquer SMOTE sur les données d'entraînement uniquement
+set.seed(123)
+train_smote <- SMOTE(
+  X = train_data[, -which(names(train_data) == "Class")],
+  target = train_data$Class,
+  K = 5,
+  dup_size = 5
+)
+
+# Le dataset rééquilibré se trouve maintenant dans train_smote$data
+train_smote_data <- train_smote$data
+
+# Convertir la colonne cible 'class' en facteur avec les bons niveaux
+train_smote_data$class <- factor(train_smote_data$class, levels = c("NonFraud", "Fraud"))
+
+# Entraîner le modèle de régression logistique sur les données rééquilibrées
+logistic_model_smote <- train(
+  x = train_smote_data[, -which(names(train_smote_data) == "class")],
+  y = train_smote_data$class,
+  method = "glm",
+  family = "binomial",
+  trControl = trainControl(method = "cv", number = 5, classProbs = TRUE, summaryFunction = twoClassSummary),
+  metric = "ROC"
+)
+
+# Évaluation du modèle
+# Prédictions
+predictions_smote <- predict(logistic_model_smote, newdata = test_data)
+print(table(predictions_smote))
+
+# Évaluation des performances avec AUC
+prob_predictions_smote <- predict(logistic_model_smote, newdata = test_data, type = "prob")
+roc_obj_smote <- roc(test_data$Class, prob_predictions_smote[, "Fraud"])
+auc_value <- auc(roc_obj_smote)
+print(paste("AUC:", auc_value))
+
+# Matrice de confusion
+# Il y a une amélioration des performances par rapport au modèle de régression logistique entraîné sur le jeu de données original
+confusion_matrix <- confusionMatrix(predictions_smote, test_data$Class)
+print(confusion_matrix)
+```
+
+```{r}
+library(glmnet)
+# Entraînement d'autres modèles (régression ridge, lasso, xgboost et randomForest) sur les jeux de données
+# Préparation des données
+X_train <- as.matrix(train_smote_data[, -which(names(train_smote_data) == "class")])
+y_train <- train_smote_data$class
+X_test <- as.matrix(test_data[, -which(names(test_data) == "Class")])
+y_test <- test_data$Class
+```
+
+```{r}
+# Fonction pour évaluer les modèles
+evaluate_model <- function(predictions, true_values) {
+  roc_obj <- roc(true_values, predictions)
+  auc_value <- auc(roc_obj)
+  
+  # Pour la matrice de confusion, convertion des probabilités en classes
+  pred_class <- ifelse(predictions > 0.5, "Fraud", "NonFraud")
+  conf_matrix <- confusionMatrix(factor(pred_class, levels = c("NonFraud", "Fraud")), 
+                                 factor(true_values, levels = c("NonFraud", "Fraud")))
+  
+  return(list(AUC = auc_value, ConfusionMatrix = conf_matrix))
+}
+```
+
+```{r}
+# 1. Régression Ridge
+ridge_model <- cv.glmnet(X_train, y_train, alpha = 0, family = "binomial")
+ridge_pred <- predict(ridge_model, newx = X_test, s = "lambda.min", type = "response")
+ridge_eval <- evaluate_model(ridge_pred, y_test)
+```
+
+```{r}
+# Matrices de confusion - régression ridge
+# Meilleure performance que celle du modèle de régression ridge entraîné sur les données originales
+print("Matrice de confusion - Ridge")
+print(ridge_eval$ConfusionMatrix)
+```
+
+```{r}
+# 2. Régression Lasso
+lasso_model <- cv.glmnet(X_train, y_train, alpha = 1, family = "binomial")
+lasso_pred <- predict(lasso_model, newx = X_test, s = "lambda.min", type = "response")
+lasso_eval <- evaluate_model(lasso_pred, y_test)
+```
+
+```{r}
+# Matrice de confusion - régression lasso
+# Bien meilleure performance que celle de la régression lasso entraîné sur les données originales qui n'arrivait pas à prédire les cas de fraudes
+print("Matrice de confusion - Lasso")
+print(lasso_eval$ConfusionMatrix)
+```
+
+```{r}
+# 3. XGBoost
+xgb_train <- xgb.DMatrix(data = X_train, label = as.numeric(y_train) - 1)
+xgb_test <- xgb.DMatrix(data = X_test, label = as.numeric(y_test) - 1)
+
+xgb_params <- list(
+  objective = "binary:logistic",
+  eval_metric = "auc",
+  eta = 0.1,
+  max_depth = 6,
+  min_child_weight = 1,
+  subsample = 0.8,
+  colsample_bytree = 0.8
+)
+
+xgb_model <- xgb.train(
+  params = xgb_params,
+  data = xgb_train,
+  nrounds = 100,
+  watchlist = list(train = xgb_train, test = xgb_test),
+  early_stopping_rounds = 10,
+  verbose = 1
+)
+
+xgb_pred <- predict(xgb_model, xgb_test)
+xgb_eval <- evaluate_model(xgb_pred, y_test)
+```
+
+```{r}
+# Matrice de confusion - modèle xgboost
+print("Matrice de confusion - XGBoost")
+print(xgb_eval$ConfusionMatrix)
+```
+
+```{r}
+# 4. Random Forest
+rf_model <- randomForest(x = X_train, y = y_train, ntree = 100)
+rf_pred <- predict(rf_model, X_test, type = "prob")[, "Fraud"]
+rf_eval <- evaluate_model(rf_pred, y_test)
+```
+
+```{r}
+# Matrice de confusion - modèle randomForest
+print("Matrice de confusion - Random Forest")
+print(rf_eval$ConfusionMatrix)
+```
+```{r}
+# Affichage des résultats
+models <- c("Ridge", "Lasso", "XGBoost", "Random Forest")
+auc_scores <- c(ridge_eval$AUC, lasso_eval$AUC, xgb_eval$AUC, rf_eval$AUC)
+```
+
+```{r}
+# AUC des différents modèles
+results <- data.frame(Model = models, AUC = auc_scores)
+print(results)
+```
+
